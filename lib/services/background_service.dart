@@ -4,7 +4,6 @@ import 'package:another_telephony/telephony.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:share_sms/firebase_options.dart';
 import 'package:share_sms/models/shared_sms_model.dart';
@@ -13,18 +12,12 @@ import 'package:share_sms/services/database_service.dart';
 import 'package:uuid/uuid.dart';
 
 class BackgroundService {
-  static final FlutterLocalNotificationsPlugin _notificationsPlugin =
-      FlutterLocalNotificationsPlugin();
-
-  // Initialize the background service and notifications
+  // Initialize the background service
   static Future<void> initialize() async {
     try {
-      // Initialize notifications
-      await _initializeNotifications();
-
       // Configure the background service
       final service = FlutterBackgroundService();
-
+      
       await service.configure(
         androidConfiguration: AndroidConfiguration(
           onStart: onStart,
@@ -41,42 +34,10 @@ class BackgroundService {
           onBackground: onIosBackground,
         ),
       );
-
+      
       print("Background service initialized successfully");
     } catch (e) {
       print("Error initializing background service: $e");
-    }
-  }
-
-  // Initialize notification channels and settings
-  static Future<void> _initializeNotifications() async {
-    try {
-      const AndroidNotificationChannel channel = AndroidNotificationChannel(
-        'share_sms_channel',
-        'Share SMS Service',
-        description: 'Background service for processing SMS messages',
-        importance: Importance.high,
-      );
-
-      final androidPlugin =
-          _notificationsPlugin
-              .resolvePlatformSpecificImplementation<
-                AndroidFlutterLocalNotificationsPlugin
-              >();
-
-      if (androidPlugin != null) {
-        await androidPlugin.createNotificationChannel(channel);
-      }
-
-      // Initialize notifications
-      await _notificationsPlugin.initialize(
-        const InitializationSettings(
-          android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-          iOS: DarwinInitializationSettings(),
-        ),
-      );
-    } catch (e) {
-      print("Error initializing notifications: $e");
     }
   }
 
@@ -84,14 +45,14 @@ class BackgroundService {
   static Future<void> registerPeriodicTask() async {
     try {
       final service = FlutterBackgroundService();
-
+      
       // Store the database URL in shared preferences for background use
       final prefs = await SharedPreferences.getInstance();
       final dbUrl = FirebaseDatabase.instance.databaseURL;
       if (dbUrl != null) {
         await prefs.setString('firebase_db_url', dbUrl);
       }
-
+      
       // Start the service
       final isRunning = await service.isRunning();
       if (!isRunning) {
@@ -104,13 +65,13 @@ class BackgroundService {
       print("Error starting background service: $e");
     }
   }
-
+  
   // Stop the background service
   static Future<void> stopService() async {
     try {
       final service = FlutterBackgroundService();
       final isRunning = await service.isRunning();
-
+      
       if (isRunning) {
         service.invoke('stopService');
         print("Background service stopped");
@@ -121,7 +82,7 @@ class BackgroundService {
       print("Error stopping background service: $e");
     }
   }
-
+  
   // Check if the service is running
   static Future<bool> isServiceRunning() async {
     try {
@@ -138,14 +99,14 @@ class BackgroundService {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
-
+  
   try {
     // Background processing for Android
     if (service is AndroidServiceInstance) {
       service.on('stopService').listen((event) {
         service.stopSelf();
       });
-
+      
       // Set up notification update listener
       service.on('updateNotification').listen((event) {
         if (event != null &&
@@ -157,26 +118,26 @@ void onStart(ServiceInstance service) async {
           );
         }
       });
-
+      
       // Make the service foreground
       service.setAsForegroundService();
     }
 
     // Set up Firebase in the background isolate
     await _initializeFirebase();
-
+    
     // Set initial notification
     service.invoke('updateNotification', {
       'title': 'Share SMS Service',
       'content': 'Service started, monitoring for messages',
     });
-
+    
     // Process initial messages on startup
     await _processMessagesOnce(service);
-
+    
     // Set up background SMS listener
     _setupSmsListener(service);
-
+    
     // Also set up periodic checking (as a backup)
     Timer.periodic(const Duration(minutes: 15), (_) async {
       try {
@@ -185,19 +146,17 @@ void onStart(ServiceInstance service) async {
         print("Error in periodic messages check: $e");
         service.invoke('updateNotification', {
           'title': 'Share SMS Service',
-          'content':
-              'Error checking messages: ${e.toString().substring(0, min(50, e.toString().length))}',
+          'content': 'Error checking messages: ${e.toString().substring(0, min(50, e.toString().length))}',
         });
       }
     });
-
+    
     print("Background service started successfully");
   } catch (e) {
     print("Error in background service: $e");
     service.invoke('updateNotification', {
       'title': 'Share SMS Service Error',
-      'content':
-          'Service error: ${e.toString().substring(0, min(50, e.toString().length))}',
+      'content': 'Service error: ${e.toString().substring(0, min(50, e.toString().length))}',
     });
   }
 }
@@ -322,31 +281,28 @@ void _setupSmsListener(ServiceInstance service) {
   try {
     // Get the Telephony instance
     final telephony = Telephony.instance;
-
+    
     // Listen for new SMS
     telephony.listenIncomingSms(
       onNewMessage: (SmsMessage message) async {
         try {
           final prefs = await SharedPreferences.getInstance();
           final currentUserId = prefs.getString('current_user_id');
-
+          
           if (currentUserId != null && message.body != null) {
             // Create database service
             final dbRef = FirebaseDatabase.instance.ref();
             final databaseService = DatabaseService(dbRef);
-
+            
             // Process the SMS
             await _processSingleSms(databaseService, currentUserId, message);
-
-            // Show notification
-            await _showMessageNotification(message);
-
-            // Update service notification
+            
+            // Update service notification instead of showing separate notification
             service.invoke('updateNotification', {
               'title': 'Share SMS Service',
               'content': 'New message from ${message.address ?? "Unknown"}',
             });
-
+            
             print("Processed new SMS from ${message.address}");
           } else {
             print(
@@ -359,7 +315,7 @@ void _setupSmsListener(ServiceInstance service) {
       },
       listenInBackground: true,
     );
-
+    
     print("SMS listener set up successfully");
   } catch (e) {
     print("Error setting up SMS listener: $e");
@@ -449,30 +405,6 @@ String? _findMatchingKeyword(String smsBody, List<String> keywords) {
   }
 
   return null;
-}
-
-// Show a notification for a new message
-Future<void> _showMessageNotification(SmsMessage message) async {
-  try {
-    await FlutterLocalNotificationsPlugin().show(
-      DateTime.now().millisecondsSinceEpoch.remainder(
-        100000,
-      ), // Unique ID based on time
-      'New Message from ${message.address ?? "Unknown"}',
-      message.body ?? 'New message received',
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'share_sms_messages_channel',
-          'SMS Messages',
-          channelDescription: 'Notifications about new SMS messages',
-          importance: Importance.high,
-          priority: Priority.high,
-        ),
-      ),
-    );
-  } catch (e) {
-    print('Error showing notification: $e');
-  }
 }
 
 // iOS background handler
