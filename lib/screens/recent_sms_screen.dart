@@ -12,14 +12,14 @@ class RecentSmsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final isAndroid = ref.watch(isAndroidPlatformProvider);
+    final isSupported = ref.watch(isSupportedPlatformProvider);
     
     return Scaffold(
       appBar: AppBar(
         title: const Text('Recent SMS'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
-          if (isAndroid)
+          if (isSupported)
             IconButton(
               icon: const Icon(Icons.rule),
               tooltip: 'Manage Keywords',
@@ -33,10 +33,10 @@ class RecentSmsScreen extends ConsumerWidget {
             ),
         ],
       ),
-      body: isAndroid 
+      body: isSupported 
           ? const _AndroidSmsContent() 
-          : const _NonAndroidContent(),
-      floatingActionButton: isAndroid ? FloatingActionButton(
+          : const _UnsupportedPlatformContent(),
+      floatingActionButton: isSupported ? FloatingActionButton(
         onPressed: () {
           Navigator.of(context).push(
             MaterialPageRoute(
@@ -71,7 +71,7 @@ class _AndroidSmsContent extends ConsumerWidget {
           }
           
           if (status.isGranted) {
-            return _SmsListView();
+            return const _SmsListView();
           } else {
             return Center(
               child: Column(
@@ -106,18 +106,39 @@ class _AndroidSmsContent extends ConsumerWidget {
   }
 }
 
-class _SmsListView extends ConsumerWidget {
+class _SmsListView extends ConsumerStatefulWidget {
+  const _SmsListView();
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final smsListAsync = ref.watch(smsListProvider);
+  ConsumerState<_SmsListView> createState() => _SmsListViewState();
+}
+
+class _SmsListViewState extends ConsumerState<_SmsListView> {
+  @override
+  void initState() {
+    super.initState();
     
-    // Subscribe to SMS listener to receive new messages
-    ref.listen(smsListenerProvider, (previous, next) {
-      if (next.asData?.value != null) {
-        // A new SMS was received, refresh the list
-        ref.invalidate(smsListProvider);
-      }
+    // Use a post-frame callback to avoid calling setState during build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initSmsListener();
     });
+  }
+  
+  void _initSmsListener() {
+    final smsService = ref.read(smsServiceProvider);
+    if (smsService != null) {
+      smsService.startSmsListener().listen((sms) {
+        if (mounted) {
+          // Safely invalidate the provider after checking if widget is still mounted
+          ref.invalidate(smsListProvider);
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final smsListAsync = ref.watch(smsListProvider);
     
     return smsListAsync.when(
       data: (smsList) {
@@ -184,21 +205,31 @@ class _SmsListItem extends StatelessWidget {
   }
 }
 
-class _NonAndroidContent extends StatelessWidget {
-  const _NonAndroidContent();
+class _UnsupportedPlatformContent extends StatelessWidget {
+  const _UnsupportedPlatformContent();
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.phone_android, size: 80, color: Colors.grey),
-          SizedBox(height: 16),
-          Text(
-            'SMS features are only available on Android devices',
+          Icon(
+            Icons.devices_other,
+            size: 80,
+            color: Colors.grey[400],
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'SMS features are not available on this platform',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 16),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Please use an Android device for full functionality',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 14, color: Colors.grey),
           ),
         ],
       ),

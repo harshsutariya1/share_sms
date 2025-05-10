@@ -5,13 +5,20 @@ import 'package:share_sms/models/sms_model.dart';
 import 'package:share_sms/providers/auth_providers.dart';
 import 'package:share_sms/services/sms_service.dart';
 
+// Provider to check if the platform is supported for SMS features
+final isSupportedPlatformProvider = Provider<bool>((ref) {
+  // Only Android is fully supported, web is not supported for SMS
+  return defaultTargetPlatform == TargetPlatform.android && !kIsWeb;
+});
+
 // Provider for SmsService
 final smsServiceProvider = Provider<SmsService?>((ref) {
   final currentUserId = ref.watch(currentUserIdProvider);
   final databaseService = ref.watch(databaseServiceProvider);
+  final isSupported = ref.watch(isSupportedPlatformProvider);
   
-  // Only create SMS service on Android and when user is logged in
-  if (defaultTargetPlatform == TargetPlatform.android && currentUserId != null) {
+  // Only create SMS service on supported platforms and when user is logged in
+  if (isSupported && currentUserId != null) {
     return SmsService(databaseService, currentUserId);
   }
   return null;

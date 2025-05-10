@@ -48,6 +48,7 @@ dependencies:
   
   flutter_background_service: ^5.0.5
   flutter_background_service_android: ^6.0.1
+  flutter_hooks: ^0.21.2
   
 
 dev_dependencies:

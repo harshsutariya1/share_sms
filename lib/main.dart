@@ -7,6 +7,8 @@ import 'package:share_sms/providers/auth_providers.dart';
 import 'package:share_sms/screens/auth_screen.dart';
 import 'package:share_sms/screens/main_screen.dart';
 import 'package:share_sms/services/background_service.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter/foundation.dart';
 
 Future<void> main() async {
   await setup().then((_) {
@@ -21,8 +23,13 @@ Future<void> setup() async {
   FirebaseDatabase.instance.databaseURL =
       'https://share-it-3225d-default-rtdb.firebaseio.com';
       
-  // Initialize background service
+  // Initialize and start background service immediately
   await BackgroundService.initialize();
+  
+  // Request SMS permissions early if on Android
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    await Permission.sms.request();
+  }
 }
 
 class MyApp extends ConsumerWidget {

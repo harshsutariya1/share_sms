@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:share_sms/models/user_model.dart';
@@ -29,8 +30,10 @@ class AuthService {
         await prefs.setString('firebase_db_url', 
             FirebaseDatabase.instance.databaseURL ?? '');
         
-        // Register and start the background service
-        await BackgroundService.registerPeriodicTask();
+        // Only register background service on non-web platforms
+        if (!kIsWeb) {
+          await BackgroundService.registerPeriodicTask();
+        }
       }
       
       return userCredential;
@@ -75,8 +78,10 @@ class AuthService {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove('current_user_id');
         
-        // Stop the background service
-        await BackgroundService.stopService();
+        // Only stop background service on non-web platforms
+        if (!kIsWeb) {
+          await BackgroundService.stopService();
+        }
       }
       await _firebaseAuth.signOut();
     } catch (e) {

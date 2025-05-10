@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:ui';
-import 'package:another_telephony/telephony.dart';
+import 'package:flutter/foundation.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -11,9 +11,18 @@ import 'package:share_sms/models/sms_model.dart';
 import 'package:share_sms/services/database_service.dart';
 import 'package:uuid/uuid.dart';
 
+// Import conditionally for Android-only packages
+import 'package:another_telephony/telephony.dart' if (dart.library.html) 'package:share_sms/services/web_stubs.dart';
+
 class BackgroundService {
   // Initialize the background service
   static Future<void> initialize() async {
+    // Skip on web platform
+    if (kIsWeb) {
+      print("Background service not supported on web");
+      return;
+    }
+    
     try {
       // Configure the background service
       final service = FlutterBackgroundService();
@@ -21,7 +30,7 @@ class BackgroundService {
       await service.configure(
         androidConfiguration: AndroidConfiguration(
           onStart: onStart,
-          autoStart: false,
+          autoStart: true, // Enable auto-start
           isForegroundMode: true,
           notificationChannelId: 'share_sms_channel',
           initialNotificationTitle: 'Share SMS Service',
@@ -29,13 +38,21 @@ class BackgroundService {
           foregroundServiceNotificationId: 888,
         ),
         iosConfiguration: IosConfiguration(
-          autoStart: false,
+          autoStart: true, // Enable auto-start
           onForeground: onStart,
           onBackground: onIosBackground,
         ),
       );
       
       print("Background service initialized successfully");
+      
+      // Load previous settings and auto-start if enabled
+      final prefs = await SharedPreferences.getInstance();
+      final shouldAutoStart = prefs.getBool('auto_start_service') ?? true;
+      
+      if (shouldAutoStart) {
+        registerPeriodicTask();
+      }
     } catch (e) {
       print("Error initializing background service: $e");
     }
@@ -43,6 +60,12 @@ class BackgroundService {
 
   // Start the background service
   static Future<void> registerPeriodicTask() async {
+    // Skip on web platform
+    if (kIsWeb) {
+      print("Background service not supported on web");
+      return;
+    }
+    
     try {
       final service = FlutterBackgroundService();
       
@@ -52,6 +75,9 @@ class BackgroundService {
       if (dbUrl != null) {
         await prefs.setString('firebase_db_url', dbUrl);
       }
+      
+      // Save setting for auto-start
+      await prefs.setBool('auto_start_service', true);
       
       // Start the service
       final isRunning = await service.isRunning();
@@ -71,6 +97,10 @@ class BackgroundService {
     try {
       final service = FlutterBackgroundService();
       final isRunning = await service.isRunning();
+      
+      // Store preference to not auto-start
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('auto_start_service', false);
       
       if (isRunning) {
         service.invoke('stopService');
@@ -135,29 +165,32 @@ void onStart(ServiceInstance service) async {
     // Process initial messages on startup
     await _processMessagesOnce(service);
     
-    // Set up background SMS listener
-    _setupSmsListener(service);
+    // Set up background SMS listener with error handling and retries
+    _setupSmsListenerWithRetry(service);
     
-    // Also set up periodic checking (as a backup)
-    Timer.periodic(const Duration(minutes: 15), (_) async {
+    // More frequent checking for better reliability (every 5 minutes)
+    Timer.periodic(const Duration(minutes: 5), (_) async {
       try {
         await _processMessagesOnce(service);
       } catch (e) {
         print("Error in periodic messages check: $e");
-        service.invoke('updateNotification', {
-          'title': 'Share SMS Service',
-          'content': 'Error checking messages: ${e.toString().substring(0, min(50, e.toString().length))}',
-        });
+        // Still update notification but don't crash the service
+        try {
+          service.invoke('updateNotification', {
+            'title': 'Share SMS Service',
+            'content': 'Error checking messages. Will retry...',
+          });
+        } catch (_) {} // Ignore errors in notification update
       }
     });
     
     print("Background service started successfully");
   } catch (e) {
     print("Error in background service: $e");
-    service.invoke('updateNotification', {
-      'title': 'Share SMS Service Error',
-      'content': 'Service error: ${e.toString().substring(0, min(50, e.toString().length))}',
-    });
+    // Try to recover by restarting the service components
+    try {
+      _setupSmsListenerWithRetry(service);
+    } catch (_) {}
   }
 }
 
@@ -322,6 +355,22 @@ void _setupSmsListener(ServiceInstance service) {
   }
 }
 
+// Set up SMS listener with retry mechanism for better reliability
+void _setupSmsListenerWithRetry(ServiceInstance service, {int retryCount = 0}) {
+  try {
+    _setupSmsListener(service);
+  } catch (e) {
+    print("Error setting up SMS listener (attempt $retryCount): $e");
+    
+    // Retry up to 3 times with increasing delay
+    if (retryCount < 3) {
+      Future.delayed(Duration(seconds: (retryCount + 1) * 5), () {
+        _setupSmsListenerWithRetry(service, retryCount: retryCount + 1);
+      });
+    }
+  }
+}
+
 // Process a single SMS message
 Future<void> _processSingleSms(
   DatabaseService databaseService,
@@ -329,6 +378,31 @@ Future<void> _processSingleSms(
   SmsMessage sms,
 ) async {
   try {
+    // Skip if no message ID
+    if (sms.id == null) {
+      print("Skipping SMS with no ID");
+      return;
+    }
+    
+    // Check if this message has already been processed
+    final prefs = await SharedPreferences.getInstance();
+    final processedIds = prefs.getStringList('processed_message_ids_$userId') ?? [];
+    
+    if (processedIds.contains(sms.id.toString())) {
+      print("Skipping already processed message in background: ${sms.id}");
+      return;
+    }
+    
+    // Get the timestamp of the last processed message
+    final lastProcessedTimestamp = prefs.getInt('last_processed_time_$userId');
+    
+    // Skip if this message is older than the last processed time
+    if (lastProcessedTimestamp != null && sms.date != null && 
+        sms.date! <= lastProcessedTimestamp) {
+      print("Skipping older message in background: ${sms.id}");
+      return;
+    }
+    
     // Convert to SmsModel
     final smsModel = SmsModel(
       id: sms.id?.toString(),
@@ -352,15 +426,18 @@ Future<void> _processSingleSms(
 
     // Get user details for username
     final currentUser = await databaseService.getUserDetails(userId);
+    print("Checking SMS from ${sms.address} against ${activeRules.length} rules");
 
     // Check each rule for keyword matches
-    for (final rule in activeRules) {
+    int matchCount = 0;
+    for (var rule in activeRules) {
       final matchedKeyword = _findMatchingKeyword(
         smsModel.body!,
         rule.keywords,
       );
 
       if (matchedKeyword != null) {
+        matchCount++;
         print("Keyword match found: $matchedKeyword");
 
         // Create shared message
@@ -377,12 +454,28 @@ Future<void> _processSingleSms(
         );
 
         // Use the proper API to share the message
-        await databaseService.shareMessage(sharedMessage);
-
-        print(
-          "Message shared with user ${rule.receiverId}, keyword: $matchedKeyword",
-        );
+        try {
+          await databaseService.shareMessage(sharedMessage);
+          print("Message shared with user ${rule.receiverId}, keyword: $matchedKeyword");
+        } catch (e) {
+          print("Error sharing message: $e");
+        }
       }
+    }
+    
+    if (matchCount == 0) {
+      print("No keyword matches found for message from ${sms.address}");
+    }
+    
+    // Mark message as processed and update last processed time
+    processedIds.add(sms.id.toString());
+    if (processedIds.length > 1000) {
+      processedIds.removeAt(0); // Keep the list manageable
+    }
+    await prefs.setStringList('processed_message_ids_$userId', processedIds);
+    
+    if (sms.date != null) {
+      await prefs.setInt('last_processed_time_$userId', sms.date!);
     }
   } catch (e) {
     print("Error processing single SMS: $e");
